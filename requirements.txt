@@ -1,8 +1,7 @@
 streamlit
 pandas
 matplotlib
-pulp
 openpyxl
+pulp
 python-dotenv
-google-genai
 requests
