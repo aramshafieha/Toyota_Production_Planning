@@ -5,3 +5,4 @@ pulp
 openpyxl
 python-dotenv
 google-genai
+requests
