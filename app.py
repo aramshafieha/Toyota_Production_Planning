@@ -4,6 +4,7 @@ import os
 import json
 import urllib.request
 import urllib.error
+import requests
 import pandas as pd
 from dotenv import load_dotenv
 from google import genai
@@ -423,7 +424,20 @@ Question:
             import time
 
             def ask_gemini_rest(prompt_text):
-                api_key = gemini_api_key
+                # requests sends the JSON body as UTF-8 and avoids the
+                # latin-1 header/body encoding path that caused the Cloud error.
+                api_key = str(gemini_api_key).strip()
+
+                # Gemini API keys are ASCII tokens. Remove accidental surrounding
+                # whitespace but never transform the actual key.
+                try:
+                    api_key.encode("ascii")
+                except UnicodeEncodeError:
+                    raise RuntimeError(
+                        "GEMINI_API_KEY contains non-ASCII characters. "
+                        "Please replace it with the original Gemini API key."
+                    )
+
                 models = [
                     "gemini-2.5-flash-lite",
                     "gemini-2.5-flash",
@@ -442,7 +456,7 @@ Question:
                         "contents": [
                             {
                                 "role": "user",
-                                "parts": [{"text": prompt_text}]
+                                "parts": [{"text": str(prompt_text)}]
                             }
                         ],
                         "generationConfig": {
@@ -451,31 +465,38 @@ Question:
                         }
                     }
 
-                    body = json.dumps(
-                        payload,
-                        ensure_ascii=False
-                    ).encode("utf-8")
-
                     for attempt in range(3):
                         try:
-                            request = urllib.request.Request(
+                            response = requests.post(
                                 url,
-                                data=body,
-                                method="POST",
+                                params={"key": api_key},
+                                json=payload,
                                 headers={
                                     "Content-Type": "application/json; charset=utf-8",
-                                    "x-goog-api-key": api_key,
+                                    "Accept": "application/json",
                                 },
+                                timeout=45,
                             )
 
-                            with urllib.request.urlopen(
-                                request,
-                                timeout=45
-                            ) as response:
-                                raw = response.read().decode("utf-8")
-                                data = json.loads(raw)
+                            if response.status_code in (429, 500, 502, 503, 504):
+                                last_error = RuntimeError(
+                                    f"Gemini HTTP {response.status_code}: "
+                                    f"{response.text[:1000]}"
+                                )
+                                if attempt < 2:
+                                    time.sleep(2 ** (attempt + 1))
+                                    continue
+                                break
 
+                            if not response.ok:
+                                raise RuntimeError(
+                                    f"Gemini HTTP {response.status_code}: "
+                                    f"{response.text[:2000]}"
+                                )
+
+                            data = response.json()
                             candidates = data.get("candidates", [])
+
                             if not candidates:
                                 feedback = data.get("promptFeedback", {})
                                 raise RuntimeError(
@@ -490,7 +511,7 @@ Question:
                             )
 
                             answer = "".join(
-                                part.get("text", "")
+                                str(part.get("text", ""))
                                 for part in parts
                                 if part.get("text")
                             )
@@ -502,55 +523,12 @@ Question:
 
                             return answer, model_name
 
-                        except urllib.error.HTTPError as e:
+                        except requests.RequestException as e:
                             last_error = e
-                            status = e.code
-
-                            try:
-                                error_body = e.read().decode(
-                                    "utf-8",
-                                    errors="replace"
-                                )
-                            except Exception:
-                                error_body = str(e)
-
-                            if status in (429, 500, 502, 503, 504):
-                                if attempt < 2:
-                                    time.sleep(2 ** (attempt + 1))
-                                    continue
-
-                                # Try the next model after retries.
-                                break
-
-                            raise RuntimeError(
-                                f"Gemini HTTP {status}: {error_body}"
-                            )
-
-                        except (
-                            urllib.error.URLError,
-                            TimeoutError,
-                            RuntimeError,
-                        ) as e:
-                            last_error = e
-                            error_text = str(e).lower()
-
-                            temporary = (
-                                "503" in error_text
-                                or "unavailable" in error_text
-                                or "429" in error_text
-                                or "rate limit" in error_text
-                                or "timeout" in error_text
-                                or "timed out" in error_text
-                            )
-
-                            if temporary and attempt < 2:
+                            if attempt < 2:
                                 time.sleep(2 ** (attempt + 1))
                                 continue
-
-                            if temporary:
-                                break
-
-                            raise
+                            break
 
                 raise last_error or RuntimeError(
                     "Gemini did not return a response."
@@ -590,10 +568,14 @@ Question:
                         "⚠️ محدودیت موقت درخواست Gemini فعال شده است. "
                         "لطفاً کمی صبر کنید و دوباره سؤال را ارسال کنید."
                     )
-                elif "ascii" in error_text or "unicode" in error_text:
+                elif (
+                    "ascii" in error_text
+                    or "unicode" in error_text
+                    or "latin-1" in error_text
+                ):
                     st.error(
                         "❌ خطای encoding در ارتباط با Gemini. "
-                        "نسخه REST پروژه باید این مشکل را برطرف کند."
+                        "این نسخه ارسال درخواست را با UTF-8 و requests انجام می‌دهد."
                     )
                     st.code(str(e))
                 else:
@@ -653,4 +635,4 @@ with left:
     )
 
 with right:
-    st.caption("Version 1.0")
+    st.caption("Version 1.0")n 1.0")
